@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
-
-	"github.com/gin-gonic/gin"
 
 	"testmergerfix2/internal/config"
 )
@@ -20,27 +19,18 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	configureGinMode(cfg.Environment)
-
-	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
-
-	// Fail closed on proxies unless explicitly configured in code.
-	if err := router.SetTrustedProxies(nil); err != nil {
-		log.Fatalf("set trusted proxies: %v", err)
-	}
-
-	router.GET("/healthz", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	router.GET("/hello", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"message": cfg.HelloMessage})
+	mux.HandleFunc("/hello", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"message": cfg.HelloMessage})
 	})
 
 	server := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           router,
+		Handler:           requestLogger(mux),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 	}
 
@@ -65,11 +55,17 @@ func main() {
 	}
 }
 
-func configureGinMode(environment string) {
-	if environment == "production" {
-		gin.SetMode(gin.ReleaseMode)
-		return
-	}
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("%s %s", r.Method, r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
+}
 
-	gin.SetMode(gin.DebugMode)
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		log.Printf("write JSON response: %v", err)
+	}
 }
